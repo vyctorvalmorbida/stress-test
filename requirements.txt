@@ -3,3 +3,5 @@ yfinance>=0.2.65
 pandas>=2.3.0
 numpy>=2.3.0
 matplotlib>=3.10.0
+plotly>=5.22.0
+statsmodels>=0.14.2
