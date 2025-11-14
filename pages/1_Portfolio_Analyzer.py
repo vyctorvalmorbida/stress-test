@@ -1,10 +1,12 @@
 # pages/1_Portfolio_Analyzer.py
 # ============================================
-# Portfolio Analyzer – Faz Consulting (v2.1)
+# Portfolio Analyzer – Faz Consulting (v2.2)
 # Visual em % (eixos + hovers) • cálculos em decimais
 # Multi-ativos • Beta • Sharpe • MDD • Correlação
 # Fronteira eficiente • CAPM/SML • Rolling do portfólio
-# Contribuição ao risco (RC/MRC) • Export CSV
+# Contribuição ao risco (RC/MRC) • Análise multi-período
+# Crises históricas (GFC, Euro, Covid, 2022) • Alertas rápidos
+# Export CSV
 # ============================================
 
 from datetime import datetime, timedelta
@@ -196,7 +198,7 @@ def risk_contributions(cov_ann: np.ndarray, weights: np.ndarray):
 # UI – Cabeçalho
 # -------------------------
 st.title("📊 Portfolio Analyzer — Faz Consulting")
-st.caption("Análise multi-ativos • Risco/Retorno • Beta • Correlação • Fronteira Eficiente • CAPM • RC/MRC")
+st.caption("Análise multi-ativos • Risco/Retorno • Beta • Correlação • Fronteira Eficiente • CAPM • RC/MRC • Crises históricas")
 
 # -------------------------
 # Sidebar – parâmetros
@@ -206,12 +208,12 @@ with st.sidebar:
 
     tickers_str = st.text_input(
         "Tickers (separados por vírgula)",
-        value="BND, AGG, SPY, VEA, IAU",
+        value="URTH, AVUV, GLD, BTC",
         help="Use os tickers do Yahoo Finance (ex.: BND, SPY, BOVA11.SA, PETR4.SA)"
     )
     weights_str = st.text_input(
         "Pesos (mesma ordem, somando ~1.0)",
-        value="0.35, 0.25, 0.20, 0.15, 0.05",
+        value="0.35, 0.25, 0.20, 0.20",
         help="Ex.: 0.4, 0.3, 0.3"
     )
     benchmark = st.text_input(
@@ -223,9 +225,10 @@ with st.sidebar:
     period_years = st.number_input(
         "Janela histórica (anos)",
         min_value=1,
-        max_value=15,
-        value=2,
-        step=1
+        max_value=20,
+        value=10,
+        step=1,
+        help="Para ver GFC/Euro/Covid/2022, use pelo menos 15–20 anos."
     )
 
     rf_annual = st.number_input(
@@ -361,6 +364,26 @@ if run_btn:
         c6.metric("Nº de ativos", str(len(tickers)))
 
         # -------------------------
+        # Alertas rápidos (red flags simples)
+        # -------------------------
+        alerts = []
+        if port_mdd < -0.20:
+            alerts.append("Max Drawdown pior que -20% no período analisado.")
+        if port_vol_ann > 0.20:
+            alerts.append("Volatilidade anual acima de 20% — portfólio com perfil agressivo.")
+        if port_beta > 1.2:
+            alerts.append(f"Beta vs {benchmark} acima de 1.2 — sensibilidade elevada ao benchmark.")
+        if len(tickers) > 1:
+            max_weight = float(weights.max())
+            if max_weight > 0.40:
+                alerts.append(f"Maior peso individual acima de 40% ({max_weight*100:.1f}%).")
+
+        if alerts:
+            st.markdown("### ⚠️ Alertas rápidos")
+            for msg in alerts:
+                st.warning(msg)
+
+        # -------------------------
         # Tabela – Estatísticas individuais
         # -------------------------
         st.markdown("### Estatísticas individuais dos ativos")
@@ -446,6 +469,195 @@ if run_btn:
             coloraxis_colorbar=dict(title="Correlação")
         )
         st.plotly_chart(fig_corr, use_container_width=True)
+
+        # =====================================================
+        # 🔹 Análise multi-período (YTD, 1Y, 3Y, 5Y)
+        # =====================================================
+        st.markdown("## Análise multi-período — Portfólio vs Benchmark")
+
+        def period_metrics(label: str, start_date: datetime | None):
+            r_p = r_port.copy()
+            r_b = r_bench_aligned.copy()
+            if start_date is not None:
+                mask = r_p.index >= start_date
+                r_p = r_p[mask]
+                r_b = r_b[mask]
+            if r_p.empty or r_b.empty:
+                return {
+                    "Período": label,
+                    "Retorno Portfólio": np.nan,
+                    "Retorno Benchmark": np.nan,
+                    "Excesso Retorno": np.nan,
+                    "Vol Portfólio": np.nan,
+                    "Sharpe Portfólio": np.nan,
+                    "Max Drawdown Portfólio": np.nan,
+                }
+            ret_ann_p = float(r_p.mean() * 252.0)
+            ret_ann_b = float(r_b.mean() * 252.0)
+            vol_ann_p = float(r_p.std(ddof=0) * np.sqrt(252.0))
+            sharpe_p = (ret_ann_p - rf_annual) / vol_ann_p if vol_ann_p > 0 else np.nan
+            px_p = (1.0 + r_p).cumprod()
+            mdd_p = float(dd_series(px_p).min())
+            return {
+                "Período": label,
+                "Retorno Portfólio": ret_ann_p,
+                "Retorno Benchmark": ret_ann_b,
+                "Excesso Retorno": ret_ann_p - ret_ann_b,
+                "Vol Portfólio": vol_ann_p,
+                "Sharpe Portfólio": sharpe_p,
+                "Max Drawdown Portfólio": mdd_p,
+            }
+
+        last_date = r_port.index[-1]
+        ytd_start = datetime(last_date.year, 1, 1)
+        one_year_start = last_date - timedelta(days=365)
+        three_year_start = last_date - timedelta(days=365 * 3)
+        five_year_start = last_date - timedelta(days=365 * 5)
+
+        periods_rows = [
+            period_metrics("YTD", ytd_start),
+            period_metrics("1 ano", one_year_start),
+            period_metrics("3 anos", three_year_start),
+            period_metrics("5 anos", five_year_start),
+            period_metrics("Período total", None),
+        ]
+        df_periods = pd.DataFrame(periods_rows)
+
+        df_periods_display = df_periods.copy()
+        for col in [
+            "Retorno Portfólio",
+            "Retorno Benchmark",
+            "Excesso Retorno",
+            "Vol Portfólio",
+            "Max Drawdown Portfólio",
+        ]:
+            df_periods_display[col] = df_periods_display[col].map(
+                lambda x: f"{x*100:.2f}%" if np.isfinite(x) else "N/A"
+            )
+        df_periods_display["Sharpe Portfólio"] = df_periods_display["Sharpe Portfólio"].map(
+            lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and np.isfinite(x) else "N/A"
+        )
+        st.dataframe(df_periods_display, use_container_width=True)
+
+        # gráfico de barras dos retornos anuais por período
+        fig_periods = go.Figure()
+        mask_non_na = df_periods["Retorno Portfólio"].notna()
+        fig_periods.add_trace(
+            go.Bar(
+                x=df_periods["Período"][mask_non_na],
+                y=df_periods["Retorno Portfólio"][mask_non_na],
+                name="Portfólio",
+                hovertemplate="Período: %{x}<br>Retorno anual: %{y:.1%}<extra></extra>",
+            )
+        )
+        fig_periods.add_trace(
+            go.Bar(
+                x=df_periods["Período"][mask_non_na],
+                y=df_periods["Retorno Benchmark"][mask_non_na],
+                name=f"Benchmark ({benchmark})",
+                hovertemplate="Período: %{x}<br>Retorno anual: %{y:.1%}<extra></extra>",
+            )
+        )
+        fig_periods.update_layout(
+            barmode="group",
+            title="Retorno anualizado por período — Portfólio vs Benchmark",
+            xaxis_title="Período",
+            yaxis_title="Retorno anual",
+            yaxis_tickformat=".0%",
+        )
+        st.plotly_chart(fig_periods, use_container_width=True)
+
+        # =====================================================
+        # 🔹 Comportamento em períodos de crise
+        # =====================================================
+        st.markdown("## Comportamento em períodos de crise")
+
+        crises = {
+            "GFC 2007–2009 (Subprime)": ("2007-10-01", "2009-03-31"),
+            "Crise da Zona do Euro 2011": ("2011-04-01", "2012-06-30"),
+            "Covid Crash 2020": ("2020-02-15", "2020-04-30"),
+            "Bear de Inflação/Juros 2022": ("2022-01-01", "2022-12-31"),
+        }
+
+        crisis_rows = []
+        for name, (start_str, end_str) in crises.items():
+            start_dt = pd.to_datetime(start_str)
+            end_dt = pd.to_datetime(end_str)
+            mask = (r_port.index >= start_dt) & (r_port.index <= end_dt)
+            r_p = r_port.loc[mask]
+            r_b = r_bench_aligned.loc[mask]
+            if r_p.empty or r_b.empty:
+                crisis_rows.append({
+                    "Crise": name,
+                    "Retorno Portfólio": np.nan,
+                    "Retorno Benchmark": np.nan,
+                    "Excesso Retorno": np.nan,
+                    "Vol Portfólio": np.nan,
+                    "Max Drawdown Portfólio": np.nan,
+                })
+                continue
+            # retorno total no período
+            ret_p = float((1.0 + r_p).prod() - 1.0)
+            ret_b = float((1.0 + r_b).prod() - 1.0)
+            vol_p = float(r_p.std(ddof=0) * np.sqrt(252.0))
+            px_p = (1.0 + r_p).cumprod()
+            mdd_p = float(dd_series(px_p).min())
+            crisis_rows.append({
+                "Crise": name,
+                "Retorno Portfólio": ret_p,
+                "Retorno Benchmark": ret_b,
+                "Excesso Retorno": ret_p - ret_b,
+                "Vol Portfólio": vol_p,
+                "Max Drawdown Portfólio": mdd_p,
+            })
+
+        df_crisis = pd.DataFrame(crisis_rows)
+
+        df_crisis_display = df_crisis.copy()
+        for col in [
+            "Retorno Portfólio",
+            "Retorno Benchmark",
+            "Excesso Retorno",
+            "Vol Portfólio",
+            "Max Drawdown Portfólio",
+        ]:
+            df_crisis_display[col] = df_crisis_display[col].map(
+                lambda x: f"{x*100:.2f}%" if np.isfinite(x) else "N/A"
+            )
+        st.dataframe(df_crisis_display, use_container_width=True)
+
+        mask_non_na_c = df_crisis["Retorno Portfólio"].notna()
+        if mask_non_na_c.any():
+            fig_crisis = go.Figure()
+            fig_crisis.add_trace(
+                go.Bar(
+                    x=df_crisis["Crise"][mask_non_na_c],
+                    y=df_crisis["Retorno Portfólio"][mask_non_na_c],
+                    name="Portfólio",
+                    hovertemplate="Crise: %{x}<br>Retorno total: %{y:.1%}<extra></extra>",
+                )
+            )
+            fig_crisis.add_trace(
+                go.Bar(
+                    x=df_crisis["Crise"][mask_non_na_c],
+                    y=df_crisis["Retorno Benchmark"][mask_non_na_c],
+                    name=f"Benchmark ({benchmark})",
+                    hovertemplate="Crise: %{x}<br>Retorno total: %{y:.1%}<extra></extra>",
+                )
+            )
+            fig_crisis.update_layout(
+                barmode="group",
+                title="Comportamento em crises históricas — Retorno total",
+                xaxis_title="Crise",
+                yaxis_title="Retorno total",
+                yaxis_tickformat=".0%",
+            )
+            st.plotly_chart(fig_crisis, use_container_width=True)
+        else:
+            st.info(
+                "A janela histórica selecionada é curta demais para cobrir os períodos de crise pré-definidos. "
+                "Aumente 'Janela histórica (anos)' para analisar GFC/Euro/Covid/2022."
+            )
 
         # =====================================================
         # 🔹 Fronteira eficiente, GMV, Tangency portfolio
@@ -744,7 +956,7 @@ if run_btn:
         st.download_button(
             label="⬇️ Baixar CSV com métricas do portfólio",
             data=csv_bytes,
-            file_name="portfolio_analyzer_faz_consulting_v2.csv",
+            file_name="portfolio_analyzer_faz_consulting_v2_2.csv",
             mime="text/csv"
         )
 
