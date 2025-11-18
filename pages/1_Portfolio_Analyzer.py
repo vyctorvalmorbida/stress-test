@@ -261,9 +261,18 @@ with st.sidebar:
     run_btn = st.button("▶️ Rodar análise", type="primary")
 
 # -------------------------
+# Controle de estado da análise
+# -------------------------
+if "run_analysis" not in st.session_state:
+    st.session_state["run_analysis"] = False
+
+if run_btn:
+    st.session_state["run_analysis"] = True
+
+# -------------------------
 # Execução principal
 # -------------------------
-if run_btn:
+if st.session_state["run_analysis"]:
     try:
         # 1) Parse de tickers e pesos
         tickers = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
@@ -658,6 +667,60 @@ if run_btn:
                 "A janela histórica selecionada é curta demais para cobrir os períodos de crise pré-definidos. "
                 "Aumente 'Janela histórica (anos)' para analisar GFC/Euro/Covid/2022."
             )
+
+                # =====================================================
+        # 🔹 Correlação em períodos de crise
+        # =====================================================
+        st.markdown("### Correlação entre ativos em períodos de crise")
+
+        crisis_corrs = {}
+
+        for name, (start_str, end_str) in crises.items():
+            start_dt = pd.to_datetime(start_str)
+            end_dt = pd.to_datetime(end_str)
+
+            # recorte de retornos na janela da crise
+            mask_ret = (returns.index >= start_dt) & (returns.index <= end_dt)
+
+            # inclui benchmark junto com os ativos do portfólio
+            cols_corr = [c for c in tickers + [benchmark] if c in returns.columns]
+            ret_window = returns.loc[mask_ret, cols_corr].dropna(how="all")
+
+            # se tiver poucas observações, ignora (pra não gerar correlação lixo)
+            if len(ret_window) < 30:
+                continue
+
+            crisis_corrs[name] = ret_window.corr()
+
+        if not crisis_corrs:
+            st.info(
+                "Não há dados suficientes para calcular correlações por crise "
+                "(a janela histórica pode estar curta demais)."
+            )
+        else:
+            crise_escolhida = st.selectbox(
+                "Selecione a crise para visualizar a matriz de correlação",
+                options=list(crisis_corrs.keys())
+            )
+
+            corr_crise = crisis_corrs[crise_escolhida]
+
+            fig_corr_crise = px.imshow(
+                corr_crise,
+                text_auto=".2f",
+                aspect="auto",
+                color_continuous_scale="RdYlGn",
+                zmin=-1,
+                zmax=1
+            )
+            fig_corr_crise.update_layout(
+                title=f"Matriz de correlação durante {crise_escolhida}",
+                xaxis_title="Ativo / Benchmark",
+                yaxis_title="Ativo / Benchmark",
+                coloraxis_colorbar=dict(title="Correlação")
+            )
+            st.plotly_chart(fig_corr_crise, use_container_width=True)
+
 
         # =====================================================
         # 🔹 Fronteira eficiente, GMV, Tangency portfolio
